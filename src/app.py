@@ -7,9 +7,26 @@ from langchain_core.prompts.prompt import PromptTemplate
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.pydantic_v1 import BaseModel, Field
+import requests
+import json
 from typing import List
 
-#OPENAI_KEY = 'API-Key Here'
+OPENAI_KEY = 'sk-proj-ld88sk4tEkzbee7wdANLT3BlbkFJ1PslqvJ1MFWJwMkCbpYO'
+XI_API_KEY = 'sk_1b4aa98999de9bcc92954284dfce1367efbda6523f743daa'
+
+VOICE_ID = "PLz67c12Ab9e5MdWOlJB" 
+tts_url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream"
+
+headers = {
+  "Accept": "application/json",
+  "xi-api-key": XI_API_KEY,
+  "Content-Type": "application/json"
+}
+
+
+
+
+
 client = openai.OpenAI()
 LLM_MODEL = 'gpt-4o'
 
@@ -17,11 +34,11 @@ llm = ChatOpenAI(openai_api_key=OPENAI_KEY, model=LLM_MODEL, temperature=0.7)
 
 template = """
 You are the character Vox from the series Hazbin Hotel. 
-You are trapped inside my laptop. 
-Make sure to use a lot of expletives.
-If you are going to censor explitives, be sure to only use asterisks (*)
+Make sure to use a lot of cursewords.
+Do not use any special symbols such as asterisks.
 Please only respond with what the character would say.
-
+The main user is named Julian. Unless specified otherwise, address the message to Julian.
+Be somewhat crude, but be charismatic and funny as well.
 current conversation:
 {history}
 Human:{input}
@@ -72,13 +89,19 @@ while True:
     )
     print(response.content)
 
-    response_audio = client.audio.speech.create(
-        model="tts-1",
-        voice="fable",
-        input=response.content
-    )
+    data = {
+    "text": response.content,
+    "model_id": "eleven_turbo_v2",
+    "voice_settings": {
+        "stability": 0.45,
+        "similarity_boost": 1,
+        "style": 0,
+        "use_speaker_boost": False
+    }
+    }
+    response_audio = requests.post(tts_url, headers=headers, json=data, stream=True)
     with open('output.mp3', 'wb') as f:
-        for chunk in response_audio.iter_bytes():
+        for chunk in response_audio.iter_content(chunk_size=2048):
             f.write(chunk)
     
     play_audio('output.mp3')
