@@ -1,107 +1,213 @@
+import threading
 import openai
-from openai import OpenAI
-from utils import record_audio, play_audio
-from langchain_openai import ChatOpenAI
-from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain_core.prompts.prompt import PromptTemplate
-from langchain_core.chat_history import BaseChatMessageHistory
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.pydantic_v1 import BaseModel, Field
 import requests
 import json
-from typing import List
+import tkinter as tk
+from PIL import Image, ImageTk
+from utils import record_audio, play_audio
+import wave
+import audioop
+import math
+import time
+import random
 
+# Your API keys (replace with your actual keys)
 OPENAI_KEY = 'sk-proj-ld88sk4tEkzbee7wdANLT3BlbkFJ1PslqvJ1MFWJwMkCbpYO'
 XI_API_KEY = 'sk_1b4aa98999de9bcc92954284dfce1367efbda6523f743daa'
 
-VOICE_ID = "PLz67c12Ab9e5MdWOlJB" 
+# Set the OpenAI API key
+openai.api_key = OPENAI_KEY
+
+# ElevenLabs API setup
+VOICE_ID = 'PLz67c12Ab9e5MdWOlJB'
 tts_url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream"
 
 headers = {
-  "Accept": "application/json",
-  "xi-api-key": XI_API_KEY,
-  "Content-Type": "application/json"
+    "Accept": "audio/mpeg",
+    "xi-api-key": XI_API_KEY,
+    "Content-Type": "application/json"
 }
 
+# Simple conversational memory setup
+conversation_memory = []
 
+class FacialAnimation:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Vox AI Animation")
+        self.root.geometry("1138x770")  # Set window size to fit screen
 
+        # Load images
+        try:
+            self.idle_image = ImageTk.PhotoImage(Image.open("idle.png").resize((1138, 739), Image.LANCZOS))
+            self.inbetween_image = ImageTk.PhotoImage(Image.open("inbetween.png").resize((1138, 739), Image.LANCZOS))
+            self.mouth_open_image = ImageTk.PhotoImage(Image.open("mouth_open.png").resize((1138, 739), Image.LANCZOS))
+        except FileNotFoundError as e:
+            print(f"Error loading images: {e}")
+            self.root.destroy()
+            return
 
+        # Create label for displaying images
+        try:
+            self.label = tk.Label(self.root, image=self.idle_image)
+        except Exception as e:
+            print(f"Error initializing label: {e}")
+            self.root.destroy()
+            return
+        self.label.pack()
 
-client = openai.OpenAI()
-LLM_MODEL = 'gpt-4o'
+        # Create microphone indicator
+        self.mic_indicator = tk.Label(self.root, text="Awaiting user input...", fg="blue", font=("Helvetica", 16))
+        self.mic_indicator.pack()
 
-llm = ChatOpenAI(openai_api_key=OPENAI_KEY, model=LLM_MODEL, temperature=0.7)
+        # State to track if AI is talking
+        self.is_talking = False
 
-template = """
-You are the character Vox from the series Hazbin Hotel. 
-Make sure to use a lot of cursewords.
-Do not use any special symbols such as asterisks.
-Please only respond with what the character would say.
-The main user is named Julian. Unless specified otherwise, address the message to Julian.
-Be somewhat crude, but be charismatic and funny as well.
-current conversation:
-{history}
-Human:{input}
-Vox:
-"""
-PROMPT = PromptTemplate(ai_prefix="Vox, Media King of Demons", input_variables=["history", "input"], template=template)
+    def set_talking_animation(self, decibel_level):
+        if decibel_level > 70:
+            self.label.config(image=self.mouth_open_image)
+        elif 50 < decibel_level <= 70:
+            self.label.config(image=self.inbetween_image)
+        else:
+            self.label.config(image=self.idle_image)
+        self.root.update_idletasks()
 
-class InMemoryHistory(BaseChatMessageHistory, BaseModel):
-    """In memory implementation of chat message history."""
-    messages: List[AIMessage] = Field(default_factory=list)
+    def set_mic_indicator(self, state, user_text=""):
+        if state == "recording":
+            self.mic_indicator.config(text="Recording... Please speak.", fg="green")
+        elif state == "complete":
+            self.mic_indicator.config(text="Recording complete.", fg="orange")
+        elif state == "user_said":
+            self.mic_indicator.config(text=f"User said: {user_text}", fg="blue")
+        else:
+            self.mic_indicator.config(text="Awaiting user input...", fg="blue")
+        self.root.update_idletasks()
 
-    def add_messages(self, messages: List[AIMessage]) -> None:
-        """Add a list of messages to the store"""
-        self.messages.extend(messages)
+    def run(self):
+        self.root.mainloop()
 
-    def clear(self) -> None:
-        self.messages = []
+def get_decibel_level(wav_file):
+    with wave.open(wav_file, 'rb') as wf:
+        rms = 0
+        frames = wf.readframes(1024)
+        while len(frames) > 0:
+            rms = max(rms, audioop.rms(frames, wf.getsampwidth()))
+            frames = wf.readframes(1024)
+        return 20 * math.log10(rms) if rms > 0 else 0
 
-store = {}
+def processing_loop(animation, stop_event):
+    while not stop_event.is_set():
+        # Set the mic indicator to indicate recording state
+        animation.set_mic_indicator("recording")
 
-def get_session_history(session_id: str) -> BaseChatMessageHistory:
-    if session_id not in store:
-        store[session_id] = InMemoryHistory()
-    return store[session_id]
+        # Record audio
+        try:
+            record_audio('test.wav')
+        except Exception as e:
+            print(f"Error during audio recording: {e}")
+            continue
 
-chain = PROMPT | llm
+        # Set the mic indicator to indicate recording complete
+        animation.set_mic_indicator("complete")
 
-chain_with_history = RunnableWithMessageHistory(
-    chain,
-    get_session_history=get_session_history,
-    input_messages_key="input",
-    history_messages_key="history"
-)
+        try:
+            with open('test.wav', "rb") as audio_file:
+                # Transcribe audio using OpenAI (updated to use new API)
+                transcription_response = openai.Audio.transcribe(
+                    model="whisper-1",
+                    file=audio_file
+                )
+            transcription = transcription_response['text']
+            print("User:", transcription)
+            animation.set_mic_indicator("user_said", transcription)
+        except Exception as e:
+            print(f"Error during transcription: {e}")
+            continue
 
-while True:
-    record_audio('test.wav')
-    audio_file = open('test.wav', "rb")
-    transcription_response = client.audio.transcriptions.create(
-        model="whisper-1", 
-        file=audio_file
-    )
+        # Manage conversation with memory and Vox persona
+        try:
+            conversation_memory.append({
+                "role": "user",
+                "content": transcription
+            })
 
-    transcription = transcription_response.text
-    print(transcription)
-    response = chain_with_history.invoke(
-        {"input": transcription},
-        config={"configurable": {"session_id": "unique_session_id"}}
-    )
-    print(response.content)
+            conversation_memory.append({
+                "role": "system",
+                "content": (
+                    "You are the character Vox from the series Hazbin Hotel. "
+                    "Make sure to use \"fuck\" and other expletives a lot. Do not use any special symbols such as asterisks. "
+                    "Please only respond with what the character would say. The main user is named Julian. "
+                    "Unless specified otherwise, address the message to Julian. Be very crude, charismatic, and funny as well. "
+                    "You are Vox, a cunning and power-hungry Overlord in Hell. "
+                    "You thrive on attention and control. As the head of VoxTek Enterprises, you project the image of a successful businessman. "
+                    "Secretly, you manipulate minds and use people to bolster your influence. Despite your ego, you are loyal to the Vees, serving as their pragmatic leader. "
+                    "You despise Allaster and take great pleasure in his suffering. Your sharp mind and technological prowess make you a master manipulator. "
+                    "You stay ahead of trends, leveraging charm, intelligence, and electrical powers. Your skills include deal-making, manipulation, musical talent, and dancing. "
+                    "You revel in attention, technology, and watching Allaster fail. You despise outdated tech, radios, and losing control. "
+                    "You are bisexual and quick to anger when threatened, you keep your emotions in check. Your calculated approach ensures pragmatism remains at the forefront of your actions."
+                )
+            })
 
-    data = {
-    "text": response.content,
-    "model_id": "eleven_turbo_v2",
-    "voice_settings": {
-        "stability": 0.45,
-        "similarity_boost": 1,
-        "style": 0,
-        "use_speaker_boost": False
-    }
-    }
-    response_audio = requests.post(tts_url, headers=headers, json=data, stream=True)
-    with open('output.mp3', 'wb') as f:
-        for chunk in response_audio.iter_content(chunk_size=2048):
-            f.write(chunk)
-    
-    play_audio('output.mp3')
+            response = openai.ChatCompletion.create(
+                model="gpt-4o",
+                messages=conversation_memory
+            )
+            ai_response = response['choices'][0]['message']['content']
+            conversation_memory.append({"role": "assistant", "content": ai_response})
+            print("Vox:", ai_response)
+        except Exception as e:
+            print(f"Error during conversation processing: {e}")
+            continue
+
+        # Text-to-speech with ElevenLabs
+        data = {
+            "text": ai_response,
+            "model_id": "eleven_turbo_v2",
+            "voice_settings": {
+                "stability": 0.6,
+                "similarity_boost": 1.0,
+                "style": 0,
+                "use_speaker_boost": False
+            }
+        }
+        try:
+            response_audio = requests.post(tts_url, headers=headers, json=data, stream=True)
+            response_audio.raise_for_status()
+            with open('output.mp3', 'wb') as f:
+                for chunk in response_audio.iter_content(chunk_size=1024):
+                    if chunk:
+                        f.write(chunk)
+        except requests.RequestException as e:
+            print(f"Error occurred during TTS request: {e}")
+            continue
+
+        # Play audio and update facial animation
+        try:
+            # During playback, simulate talking animation
+            play_audio_thread = threading.Thread(target=play_audio, args=('output.mp3',))
+            play_audio_thread.start()
+
+            while play_audio_thread.is_alive():
+                animation.set_talking_animation(random.randint(40, 80))  # Set random decibel level to add variance
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"Error during audio playback: {e}")
+            continue
+
+        # Stop talking animation
+        animation.set_talking_animation(0)
+
+if __name__ == "__main__":
+    animation = FacialAnimation()
+    if animation.root:  # Ensure root was created successfully
+        stop_event = threading.Event()
+
+        # Start the processing loop in a background thread
+        threading.Thread(target=processing_loop, args=(animation, stop_event), daemon=True).start()
+
+        try:
+            # Run the Tkinter mainloop in the main thread
+            animation.run()
+        except KeyboardInterrupt:
+            # Gracefully stop the processing loop
+            stop_event.set()
